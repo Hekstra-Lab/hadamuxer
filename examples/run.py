@@ -16,7 +16,7 @@ cbfs = [
 ]
 
 pixels = [fabio.open(cbf).data for cbf in cbfs]
-pixels = [np.where(im > 4_000, 0., im) for im in pixels]
+pixels = [np.where((im > 4_000) | (im < 0), 0., im) for im in pixels]
 
 from hadamuxer.solver import Solver
 
