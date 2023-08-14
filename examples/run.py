@@ -20,9 +20,8 @@ pixels = [np.where((im > 4_000) | (im < 0), 0., im) for im in pixels]
 
 from hadamuxer.solver import Solver
 
-s = Solver(pixels, step_size=0.5)
-s = s.cuda()
-#s.newton_step()
+s = Solver(pixels)
+s.solve()
 
 
 from IPython import embed
