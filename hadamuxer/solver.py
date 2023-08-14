@@ -4,7 +4,7 @@ from .hadamard import make_S_mat
 
 
 class Solver(torch.nn.Module):
-    def __init__(self, pixels, step_size=1.0, epsilon=1e-5, t_init=0.1, t_step=1.1, **kwargs):
+    def __init__(self, pixels, step_size=1.0, epsilon=1e-8, t_init=1.0, t_step=2., **kwargs):
         super().__init__(**kwargs)
         self.epsilon = torch.nn.Parameter(
             torch.tensor(epsilon, dtype=torch.float32),
@@ -27,6 +27,10 @@ class Solver(torch.nn.Module):
             torch.tensor(make_S_mat(self.n), dtype=torch.float32),
             requires_grad=False,
         )
+        self.Sinv = torch.nn.Parameter(
+            torch.linalg.inv(self.S),
+            requires_grad=False,
+        )
         self.t = torch.nn.Parameter(
             torch.tensor(t_init, dtype=torch.float32),
             requires_grad=False,
@@ -35,29 +39,19 @@ class Solver(torch.nn.Module):
             torch.tensor(t_step, dtype=torch.float32),
             requires_grad=False,
         )
-        self.time_points = None
-        self.initialize()
-
-    @property
-    def rate(self):
-        return self.S @ self.time_points
-
-    def initialize(self):
-        time_points_init = torch.ones_like(self.pixels)
-        #time_points_init = torch.linalg.inv(self.S) @ self.pixels
-        #time_points_init = torch.maximum(
-        #    time_points_init,
-        #    torch.ones_like(time_points_init),
-        #)
-        self.time_points = torch.nn.Parameter(
-            time_points_init,
+        self.rate = torch.nn.Parameter(
+            torch.ones_like(self.pixels),
             requires_grad=False,
         )
+
+    @property
+    def time_points(self):
+        return self.Sinv @ self.rate
 
     @torch.no_grad()
     def increase_t(self):
         self.t = torch.nn.Parameter(
-            torch.tensor(self.t * self.t_step, dtype=torch.float32),
+            torch.tensor((self.t * self.t_step).clone().detach(), dtype=torch.float32),
             requires_grad=False,
         )
 
@@ -70,14 +64,15 @@ class Solver(torch.nn.Module):
 
     @torch.no_grad()
     def newton_step(self):
-        H = Solver.hessian(self.time_points, self.pixels, self.S, self.t, self.epsilon)
-        Hinv = torch.linalg.inv(H)
+        H = Solver.hessian(self.rate, self.pixels, self.Sinv, self.t, self.epsilon)
+        #Hinv = torch.linalg.inv(H)
+        Hinv = torch.linalg.inv((1. - self.epsilon) * H + self.epsilon * torch.eye(self.n, dtype=H.dtype, device=H.device)[...,:,:])
 
-        J = Solver.jacobian(self.time_points, self.pixels, self.S, self.t, self.epsilon)
+        J = Solver.jacobian(self.rate, self.pixels, self.Sinv, self.t, self.epsilon)
         step = -Hinv @ J
-        time_points = self.time_points + step * self.step_size
-        self.time_points = torch.nn.Parameter(
-            time_points,
+        rate = self.rate + step * self.step_size
+        self.rate = torch.nn.Parameter(
+            rate,
             requires_grad=False,
         )
         residual = torch.squeeze(J.swapaxes(-2, -1) @ Hinv @ J, (-1, -2))
@@ -97,74 +92,54 @@ class Solver(torch.nn.Module):
     def solve(self, max_iter=1_000):
         residual = np.inf
         for i in range(max_iter):
-            residual = self.solve_newton().max()
-            print(f"t={self.t.detach().cpu().numpy()} ; residual={residual.detach().cpu().numpy()})")
+            residual = self.solve_newton()
+            rmax = residual.max()
+            frac = (residual < self.epsilon).sum() / torch.numel(residual)
+            print(f"t={self.t.detach().cpu().numpy()} ; max_residual={rmax.detach().cpu().numpy()} ; frac_in_tol={frac.detach().cpu().numpy()}")
             if (i+1) / self.t < self.epsilon:
                 break
             self.increase_t()
 
     @staticmethod
-    def hessian(x, k, S, t, epsilon):
-        H = t * Solver.likelihood_hessian(x, k, S) 
-        H += Solver.time_point_barrier_hessian(x) 
-        H += Solver.rate_barrier_hessian(x, S)
+    def hessian(rate, k, Sinv, t, epsilon):
+        H =  t * Solver.likelihood_hessian(rate, k, epsilon) 
+        H += Solver.barrier_hessian(rate, Sinv, epsilon) 
         return H
 
     @staticmethod
-    def jacobian(x, k, S, t, epsilon):
-        J = t * Solver.likelihood_jacobian(x, k, S) 
-        J += Solver.time_point_barrier_jacobian(x)
-        J += Solver.rate_barrier_jacobian(x, S)
+    def jacobian(rate, k, Sinv, t, epsilon):
+        J =  t * Solver.likelihood_jacobian(rate, k, epsilon) 
+        J += Solver.barrier_jacobian(rate, Sinv, epsilon)
         return J
 
     @staticmethod
-    def likelihood_jacobian(x, k, S):
-        return -S.T @ (k / (S@x) -1)
+    def likelihood_jacobian(rate, k, epsilon):
+        return -k / (rate + epsilon) + 1.
 
     @staticmethod
-    def likelihood_hessian(x, k, S):
-        rate = S@x
-        assert torch.all(rate > 0.)
-        inv_square_rate = torch.reciprocal(torch.square(rate))
-        SS = S[...,:,None,:] * S[...,None,:,:]
-        H = torch.einsum(
-            "...a,...a,dea->...de", 
-            k.squeeze(-1), 
-            inv_square_rate.squeeze(-1),
-            SS
-        )
-        return H
+    def likelihood_hessian(rate, k, epsilon):
+        diagonal = k * torch.reciprocal(torch.square(rate) + epsilon)
+        return torch.diag_embed(diagonal.squeeze(-1))
 
     @staticmethod
-    def time_point_barrier_jacobian(x):
-        return -torch.reciprocal(x)
+    def barrier_jacobian(rate, Sinv, epsilon):
+        J = -Sinv.T@(1 / (Sinv@rate + epsilon))
+        J += -torch.reciprocal(rate + epsilon)
+        return J
 
     @staticmethod
-    def time_point_barrier_hessian(x):
-        return torch.diag_embed(torch.reciprocal(x*x)).squeeze(-1)
-
-    @staticmethod
-    def rate_barrier_jacobian(x, S):
-        """
-        Ensures that the model predicts positive rate=S@x
-        """
-        return -S.T@(1 / (S@x))
-
-    @staticmethod
-    def rate_barrier_hessian(x, S):
-        """
-        Ensures that the model predicts positive rate=S@x
-        """
-        rate = S@x
-        inv_square_rate = torch.reciprocal(torch.square(rate))
-        SS = S[...,:,None,:] * S[...,None,:,:]
+    def barrier_hessian(rate, Sinv, epsilon):
+        x = Sinv@rate
+        inv_square_x = torch.square(torch.reciprocal(x + epsilon))
+        SS = Sinv[...,:,None,:] * Sinv[...,None,:,:]
         H = torch.einsum(
             "...a,dea->...de", 
-            inv_square_rate.squeeze(-1),
+            inv_square_x.squeeze(-1),
             SS
         )
-        return H
 
+        H += torch.diag_embed(torch.reciprocal(rate * rate + epsilon).squeeze(-1))
+        return H
 
 
 
