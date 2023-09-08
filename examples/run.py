@@ -21,7 +21,7 @@ pixels = [np.where((im > 4_000) | (im < 0), 0., im) for im in pixels]
 from hadamuxer.solver import Solver
 
 s = Solver(pixels)
-s = s.cuda()
+s = s.cuda() #If GPUs available
 s.solve()
 
 result = s.time_points
