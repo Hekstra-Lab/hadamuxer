@@ -5,7 +5,35 @@ from .hadamard import make_S_mat
 
 class Solver(torch.nn.Module):
     zero = 0.
-    def __init__(self, pixels, step_size=0.5, epsilon=1e-2, t_init=1.0, t_step=2.0, **kwargs):
+    def __init__(
+            self, 
+            pixels, 
+            timings=None, 
+            step_size=0.5, 
+            epsilon=1e-2, 
+            t_init=1.0, 
+            t_step=2.0, 
+            **kwargs
+        ):
+        """
+        Parameters
+        ----------
+        pixels : array
+            An array of pixels with shape (num_images, num_x, num_y)
+        timings : array
+            A vector of timings for each image with shape (num_images,).
+            To increase precision, scale the timings vector by 1/d where
+            d=120 is a sensible choice. 
+        step_size : float
+            How big of a newton step to take with default 0.5
+        epsilon : float
+            Numerical precision with default 0.01.
+        t_init : float
+            Initial value for the log barrier weight with default 1.
+        t_step : float
+            Increment for the log barrier weight with default 2.
+            t_{n+1} = t_step * t_{n}
+        """
         super().__init__(**kwargs)
         self.epsilon = torch.nn.Parameter(
             torch.tensor(epsilon, dtype=torch.float32),
@@ -24,8 +52,11 @@ class Solver(torch.nn.Module):
             torch.tensor(self.pixels.shape[-2], dtype=torch.int32), 
             requires_grad=False
         )
+        S = make_S_mat(self.n)
+        if timings is not None:
+            S = S * timings
         self.S = torch.nn.Parameter(
-            torch.tensor(make_S_mat(self.n), dtype=torch.float32),
+            torch.tensor(S, dtype=torch.float32),
             requires_grad=False,
         )
         self.Sinv = torch.nn.Parameter(
