@@ -60,7 +60,7 @@ class Solver(torch.nn.Module):
             requires_grad=False,
         )
         self.Sinv = torch.nn.Parameter(
-            torch.linalg.inv(self.S),
+            torch.linalg.pinv(self.S),
             requires_grad=False,
         )
         self.t = torch.nn.Parameter(
@@ -110,8 +110,8 @@ class Solver(torch.nn.Module):
     @torch.no_grad()
     def newton_step(self):
         H = Solver.hessian(self.rate, self.pixels, self.Sinv, self.t)
-        Hinv = torch.linalg.inv(H)
-        #Hinv = torch.linalg.inv((1. - epsilon) * H + epsilon * torch.eye(self.n, dtype=H.dtype, device=H.device)[...,:,:])
+        Hinv = torch.linalg.pinv(H)
+        #Hinv = torch.linalg.pinv((1. - epsilon) * H + epsilon * torch.eye(self.n, dtype=H.dtype, device=H.device)[...,:,:])
 
         J = Solver.jacobian(self.rate, self.pixels, self.Sinv, self.t)
         step = -Hinv @ J
